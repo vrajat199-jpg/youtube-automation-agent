@@ -47,7 +47,7 @@ class YouTubeWebOAuthService {
     await this.db.createOAuthState(hashState(state), expiresAt);
     const url = this.createOAuthClient().generateAuthUrl({
       access_type: 'offline',
-      prompt: 'consent',
+      prompt: 'consent select_account',
       include_granted_scopes: true,
       scope: YOUTUBE_SCOPES,
       state
