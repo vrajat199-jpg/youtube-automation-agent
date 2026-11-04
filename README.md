@@ -54,7 +54,7 @@ FFmpeg is installed with `npm install` through `ffmpeg-static`.
 
 1. Create a project in [Google Cloud Console](https://console.cloud.google.com/).
 2. Enable **YouTube Data API v3**, and **YouTube Analytics API** for retention and outcome data.
-3. Create an OAuth 2.0 client of type **Desktop app** (not Web application) and save the JSON as `config/credentials.json`. For cloud deployments, create a **Web application** client instead and use the exact HTTPS callback URI documented in the [cloud deployment guide](docs/cloud-deployment.md).
+3. For local setup, create an OAuth 2.0 client of type **Desktop app** and save the JSON as `config/credentials.json`. For a cloud deployment, create a **Web application** client with the exact HTTPS callback URI in the [cloud deployment guide](docs/cloud-deployment.md). For cloud deployments, create a **Web application** client instead and use the exact HTTPS callback URI documented in the [cloud deployment guide](docs/cloud-deployment.md).
 4. Under **Google Auth Platform → Audience**, add the Google account that owns your channel as a **test user**. Otherwise sign-in fails with `Error 403: access_denied`. While the app is in Testing mode, Google expires the sign-in after 7 days.
 
 ## How it works
