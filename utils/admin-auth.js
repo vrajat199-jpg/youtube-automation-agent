@@ -51,6 +51,9 @@ class AdminAuth {
     if (redirect.protocol !== 'https:') {
       throw new Error('YOUTUBE_OAUTH_REDIRECT_URI must use HTTPS in cloud mode');
     }
+    if (redirect.pathname !== '/auth/youtube/callback' || redirect.search || redirect.hash) {
+      throw new Error('YOUTUBE_OAUTH_REDIRECT_URI must use the exact /auth/youtube/callback path without query or fragment');
+    }
     return true;
   }
 
