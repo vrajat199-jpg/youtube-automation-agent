@@ -5,8 +5,8 @@ const SESSION_TTL_SECONDS = 8 * 60 * 60;
 const loginAttempts = new Map();
 
 function safeEqual(left, right) {
-  const a = Buffer.from(String(left));
-  const b = Buffer.from(String(right));
+  const a = Buffer.isBuffer(left) ? left : Buffer.from(String(left));
+  const b = Buffer.isBuffer(right) ? right : Buffer.from(String(right));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
