@@ -59,7 +59,8 @@ docker compose logs -f youtube-automation-agent
 ```
 
 The container listens on port 3456 but Compose binds it to `127.0.0.1` on the host.
-Put a TLS reverse proxy in front of it and proxy to `http://127.0.0.1:3456`. Do not expose
+Put a TLS reverse proxy in front of it and proxy to `http://127.0.0.1:3456` using the
+[example Nginx configuration](../deploy/nginx.conf.example) as a starting point. Do not expose
 the container directly to the public internet without HTTPS. The application sets
 `Secure`, `HttpOnly`, and `SameSite=Lax` session-cookie attributes in cloud mode.
 
