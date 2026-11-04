@@ -40,7 +40,7 @@ or has been granted access to that channel.
 - Resolve the active channel from an authenticated workspace membership, not a
   client-supplied channel name.
 - Scope database queries by workspace and channel.
-- Encrypt OAuth refresh tokens using a managed KMS or envelope encryption.
+- Encrypt OAuth refresh tokens with AES-256-GCM using a deployment-managed 32-byte key; managed KMS integration is a future hardening step.
 - Redact secrets and authorization headers from logs and error reports.
 - Support disconnect/revoke without deleting a channel's historical analytics.
 - Enforce a unique YouTube channel ID per connection owner/workspace.
