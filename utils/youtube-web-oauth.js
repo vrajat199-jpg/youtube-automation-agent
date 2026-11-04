@@ -146,6 +146,13 @@ class YouTubeWebOAuthService {
     }
     await this.db.deleteChannelCredentials(channelId);
     await this.db.updateChannelStatus(channelId, 'disconnected');
+
+    if (channel.isDefault) {
+      const replacement = (await this.db.listChannels()).find(item =>
+        item.id !== channelId && item.status === 'connected'
+      );
+      if (replacement) await this.db.setDefaultChannel(replacement.id);
+    }
     return this.db.getChannel(channelId);
   }
 }
