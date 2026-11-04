@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Channels · YouTube Automation Agent</title>
+  <style>
+    :root { color-scheme:dark; font-family:Inter,ui-sans-serif,system-ui,sans-serif; background:#10131a; color:#f4f6fb; }
+    * { box-sizing:border-box; } body { margin:0; padding:30px 18px 60px; }
+    main { max-width:900px; margin:auto; } header { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+    h1 { margin:0; font-size:27px; } p { color:#aab3c2; line-height:1.55; }
+    button,a.button { border:1px solid #46536a; background:#202938; color:#f4f6fb; padding:10px 14px; border-radius:10px; font:inherit; cursor:pointer; text-decoration:none; }
+    button.primary { background:#5b82f6; border-color:#5b82f6; } button.danger { border-color:#79444a; color:#ffb7bd; }
+    .panel { margin-top:22px; padding:22px; border:1px solid #303745; border-radius:16px; background:#191f2a; }
+    .channel { display:flex; align-items:center; gap:14px; border-top:1px solid #303745; padding:16px 0; }
+    .channel:first-child { border-top:0; } .avatar { width:44px;height:44px;border-radius:50%;object-fit:cover;background:#2e394b; }
+    .meta { flex:1; min-width:160px; } .meta strong { display:block; } .meta small { display:block; margin-top:4px;color:#99a4b5; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; } .pill { display:inline-block; padding:3px 8px;border-radius:30px;background:#2b3c61;color:#c7d7ff;font-size:12px;margin-left:8px; }
+    #notice { min-height:24px;color:#9eddb6; } .muted { color:#99a4b5; }
+    @media(max-width:620px){.channel{align-items:flex-start;flex-wrap:wrap}.actions{width:100%;padding-left:58px}}
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div><h1>Channel manager</h1><p>Connect and manage the YouTube channels used by your automation workspace.</p></div>
+    <div class="actions"><a class="button" href="/">Dashboard</a><button id="logout">Sign out</button></div>
+  </header>
+  <section class="panel">
+    <div class="actions"><button class="primary" id="connect">＋ Connect YouTube channel</button></div>
+    <p id="notice" role="status"></p>
+    <div id="channels"><p class="muted">Loading channels…</p></div>
+  </section>
+  <section class="panel">
+    <strong>Runtime note</strong>
+    <p class="muted">The selected default channel is the channel used by the current generation and publishing runtime. After changing the default or connecting a channel, restart the application to load its credentials. Channel-specific generation strategies and fully isolated per-channel pipelines are still being developed; do not treat this page as proof of concurrent multi-channel publishing.</p>
+  </section>
+</main>
+<script>
+const notice = document.getElementById('notice');
+const channelContainer = document.getElementById('channels');
+async function request(url, options={}) {
+  const response = await fetch(url, { credentials:'same-origin', ...options, headers:{'Content-Type':'application/json', ...(options.headers||{})} });
+  if (response.status === 401) { window.location.href='/login'; throw new Error('Please sign in again.'); }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+function renderChannels(channels) {
+  channelContainer.replaceChildren();
+  if (!channels.length) {
+    const empty = document.createElement('p'); empty.className='muted'; empty.textContent='No channels connected yet. Connect your first YouTube channel to get started.'; channelContainer.append(empty); return;
+  }
+  for (const channel of channels) {
+    const row = document.createElement('div'); row.className='channel';
+    const avatar = document.createElement('img'); avatar.className='avatar'; avatar.alt=''; avatar.src=channel.avatarUrl || ''; row.append(avatar);
+    const meta = document.createElement('div'); meta.className='meta';
+    const name = document.createElement('strong'); name.textContent=channel.displayName || 'YouTube channel'; meta.append(name);
+    const detail = document.createElement('small'); detail.textContent=(channel.youtubeChannelId || 'Not connected')+' · '+channel.status; meta.append(detail);
+    if (channel.isDefault) { const pill=document.createElement('span'); pill.className='pill'; pill.textContent='Default'; name.append(pill); }
+    row.append(meta);
+    const actions=document.createElement('div'); actions.className='actions';
+    if (!channel.isDefault && channel.status==='connected') {
+      const makeDefault=document.createElement('button'); makeDefault.textContent='Make default';
+      makeDefault.addEventListener('click', async()=>{ try { await request('/api/channels/'+encodeURIComponent(channel.id)+'/default',{method:'POST',body:'{}'}); notice.textContent='Default channel changed. Restart the app to activate it.'; await load(); } catch(e){notice.textContent=e.message;} });
+      actions.append(makeDefault);
+    }
+    if (channel.status==='connected') {
+      const disconnect=document.createElement('button'); disconnect.className='danger'; disconnect.textContent='Disconnect';
+      disconnect.addEventListener('click', async()=>{ if(!confirm('Disconnect this channel? Its saved videos and history will remain.')) return; try { await request('/api/channels/'+encodeURIComponent(channel.id)+'/disconnect',{method:'POST',body:'{}'}); notice.textContent='Channel disconnected.'; await load(); } catch(e){notice.textContent=e.message;} });
+      actions.append(disconnect);
+    }
+    row.append(actions); channelContainer.append(row);
+  }
+}
+async function load() { try { const data=await request('/api/channels'); renderChannels(data.channels || []); } catch(e){ notice.textContent=e.message; } }
+document.getElementById('connect').addEventListener('click', async()=>{ try { notice.textContent='Opening Google authorization…'; const data=await request('/api/channels/oauth/start',{method:'POST',body:'{}'}); window.location.assign(data.authorizationUrl); } catch(e){notice.textContent=e.message;} });
+document.getElementById('logout').addEventListener('click', async()=>{ await fetch('/auth/logout',{method:'POST',credentials:'same-origin'}); window.location.href='/login'; });
+const params=new URLSearchParams(window.location.search); if(params.get('connected')==='1') notice.textContent='YouTube channel connected successfully. Restart the app to load its credentials.'; if(params.get('error')) notice.textContent='Connection failed: '+params.get('error');
+load();
+</script>
+</body>
+</html>
