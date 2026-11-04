@@ -913,12 +913,7 @@ class Database {
     const channel = await this.getChannel(channelId);
     if (!channel) throw new Error('Cannot save credentials for an unknown channel');
     await this.executeQuery(
-      \`INSERT INTO channel_credentials (channel_id, encrypted_tokens, encryption_version)
-       VALUES (?, ?, 'v1')
-       ON CONFLICT(channel_id) DO UPDATE SET
-         encrypted_tokens = excluded.encrypted_tokens,
-         encryption_version = excluded.encryption_version,
-         updated_at = datetime('now')\`,
+      "INSERT INTO channel_credentials (channel_id, encrypted_tokens, encryption_version) VALUES (?, ?, 'v1') ON CONFLICT(channel_id) DO UPDATE SET encrypted_tokens = excluded.encrypted_tokens, encryption_version = excluded.encryption_version, updated_at = datetime('now')",
       [channelId, encryptedTokens]
     );
     return this.getChannelCredentials(channelId);
