@@ -24,6 +24,7 @@ class SystemTest {
       { name: 'Secret Encryption', test: () => this.testSecretEncryption() },
       { name: 'Cloud Admin Sessions', test: () => this.testCloudAdminSessions() },
       { name: 'Single-Use OAuth State', test: () => this.testOAuthStatePersistence() },
+      { name: 'Default Channel Failover', test: () => this.testDefaultChannelFailover() },
       { name: 'Production Persistence', test: () => this.testProductionPersistence() },
       { name: 'Automation Events Table', test: () => this.testAutomationEventsTable() },
       { name: 'Local Activation Metrics', test: () => this.testActivationMetrics() },
@@ -271,6 +272,52 @@ class SystemTest {
       await db.executeQuery('DELETE FROM oauth_states WHERE state_hash IN (?, ?)', [stateHash, expiredHash]);
     } finally {
       await db.executeQuery('DELETE FROM oauth_states WHERE state_hash = ?', [stateHash]);
+      await db.close();
+    }
+  }
+
+  async testDefaultChannelFailover() {
+    const { YouTubeWebOAuthService } = require('./utils/youtube-web-oauth');
+    const db = new Database();
+    await db.initialize();
+    const suffix = Date.now();
+    const firstId = 'failover_first_' + suffix;
+    const secondId = 'failover_second_' + suffix;
+
+    try {
+      await db.saveChannel({
+        id: firstId,
+        youtubeChannelId: 'UC-first-' + suffix,
+        displayName: 'First connected channel',
+        status: 'connected',
+        isDefault: true
+      });
+      await db.saveChannel({
+        id: secondId,
+        youtubeChannelId: 'UC-second-' + suffix,
+        displayName: 'Second connected channel',
+        status: 'connected',
+        isDefault: false
+      });
+
+      const service = new YouTubeWebOAuthService({ db, env: {} });
+      await service.disconnect(firstId);
+      const channels = await db.listChannels();
+      const replacement = channels.find(channel => channel.id === secondId);
+      const disconnected = await db.getChannel(firstId);
+      if (!replacement?.isDefault || replacement.status !== 'connected') {
+        throw new Error('Disconnecting the default channel did not select the next connected channel');
+      }
+      if (disconnected.status !== 'disconnected') {
+        throw new Error('Disconnected channel status was not persisted');
+      }
+      if (channels.filter(channel => channel.isDefault).length !== 1) {
+        throw new Error('Channel failover did not preserve a single default channel');
+      }
+    } finally {
+      await db.executeQuery('DELETE FROM channel_credentials WHERE channel_id IN (?, ?)', [firstId, secondId]);
+      await db.executeQuery('DELETE FROM channel_registry WHERE id IN (?, ?)', [firstId, secondId]);
+      await db.setDefaultChannel('legacy-default');
       await db.close();
     }
   }
