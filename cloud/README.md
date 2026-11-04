@@ -1,23 +1,28 @@
-# Cloud runtime scaffold
+# Cloud deployment
 
-The repository is not yet a horizontally scalable cloud application. This folder
-records the target runtime contract while preserving the current local Express app.
+The project now includes a secure single-instance Docker deployment path. The runtime
+uses Express, SQLite on a persistent volume, local media files on a persistent volume,
+and the existing in-process scheduler.
 
-## Current milestone
+## Implemented
 
-- Express remains the web/API server.
-- SQLite remains supported for local development and a single persistent instance.
-- Cloud environment variables are opt-in.
-- Multi-channel registry and web OAuth are not yet wired into publishing.
-- Durable queue workers and object storage are future milestones.
+- Docker image based on the matching Playwright browser image.
+- Docker Compose with persistent data and uploads volumes.
+- Cloud owner sign-in with an eight-hour signed HTTP-only session cookie.
+- Google OAuth Web application flow with expiring, one-use state.
+- Per-channel refresh tokens encrypted with AES-256-GCM before database storage.
+- Channel registry UI to connect, select and disconnect channel connections.
+- Selected default channel credentials are loaded by the existing pipeline at startup.
+
+## Important limitations
+
+This is not yet a horizontally scalable or fully multi-tenant product. The existing
+production pipeline uses one selected default channel at a time. Channel-specific
+strategies, channel-scoped production/job/approval/analytics data, PostgreSQL,
+Redis/BullMQ workers and object storage remain future milestones.
 
 See [Cloud deployment](../docs/cloud-deployment.md) and
 [Multi-channel architecture](../docs/multi-channel-architecture.md).
 
-## Production warning
-
-Do not scale this app to multiple replicas while it uses its local SQLite database,
-filesystem token store, local scheduler, or local media paths. A production deployment
-must use persistent volumes, backups, HTTPS, a managed secret store, and a reviewed
-OAuth web flow. Publishing stays disabled until a real channel is connected and the
-human approval gates are satisfied.
+Do not run multiple replicas or enable autoscaling. Use HTTPS, persistent volumes,
+backups, a managed secret store, and keep human approval gates enabled.
