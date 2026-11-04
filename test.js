@@ -20,6 +20,7 @@ class SystemTest {
     
     const tests = [
       { name: 'Database Connection', test: () => this.testDatabase() },
+      { name: 'Multi-Channel Registry Persistence', test: () => this.testChannelRegistry() },
       { name: 'Production Persistence', test: () => this.testProductionPersistence() },
       { name: 'Automation Events Table', test: () => this.testAutomationEventsTable() },
       { name: 'Local Activation Metrics', test: () => this.testActivationMetrics() },
@@ -121,6 +122,69 @@ class SystemTest {
     
     await db.close();
     this.logger.info('Database test completed successfully');
+  }
+
+  async testChannelRegistry() {
+    const db = new Database();
+    await db.initialize();
+    const channelId = `channel_registry_test_${Date.now()}`;
+    const secondId = `${channelId}_duplicate`;
+
+    try {
+      const legacy = await db.getChannel('legacy-default');
+      if (!legacy || !legacy.isDefault || !legacy.approvalRequired) {
+        throw new Error('Legacy channel was not seeded as the approved default channel');
+      }
+
+      const channel = await db.saveChannel({
+        id: channelId,
+        youtubeChannelId: `UC-test-${Date.now()}`,
+        displayName: 'Registry test channel',
+        handle: '@registry-test',
+        status: 'connected',
+        defaultPrivacyStatus: 'private',
+        formats: ['long_form', 'shorts'],
+        approvalRequired: true
+      });
+      if (!channel || channel.displayName !== 'Registry test channel' || !channel.approvalRequired) {
+        throw new Error('Channel registry did not persist channel metadata and approval gate');
+      }
+      if (channel.formats.length !== 2 || channel.status !== 'connected') {
+        throw new Error('Channel registry did not persist formats or connection status');
+      }
+
+      let duplicateBlocked = false;
+      try {
+        await db.saveChannel({
+          id: secondId,
+          youtubeChannelId: channel.youtube_channel_id,
+          displayName: 'Duplicate channel'
+        });
+      } catch (error) {
+        duplicateBlocked = /already registered/.test(error.message);
+      }
+      if (!duplicateBlocked) throw new Error('Duplicate YouTube channel registration was not blocked');
+
+      const selected = await db.setDefaultChannel(channelId);
+      if (!selected.isDefault) throw new Error('Default channel selection was not persisted');
+      const channels = await db.listChannels();
+      if (channels.filter(item => item.isDefault).length !== 1) {
+        throw new Error('Channel registry must have exactly one selected default channel');
+      }
+
+      let unsafePrivacyBlocked = false;
+      try {
+        await db.saveChannel({ id: secondId, displayName: 'Unsafe privacy', defaultPrivacyStatus: 'invalid' });
+      } catch (error) {
+        unsafePrivacyBlocked = /defaultPrivacyStatus/.test(error.message);
+      }
+      if (!unsafePrivacyBlocked) throw new Error('Unsupported default privacy status was accepted');
+    } finally {
+      await db.executeQuery('DELETE FROM channel_registry WHERE id IN (?, ?)', [channelId, secondId]);
+      await db.setDefaultChannel('legacy-default');
+      await db.close();
+    }
+    this.logger.info('Multi-channel registry persistence test completed successfully');
   }
 
   async testProductionPersistence() {
