@@ -1,63 +1,117 @@
-# Cloud deployment foundation
+# Cloud deployment
 
-This document describes the first cloud-readiness layer for YouTube Automation Agent.
-The existing Express dashboard and SQLite database remain the default runtime. Cloud
-services are opt-in so existing self-hosted installations continue to work.
+The current cloud deployment is a **single application instance** using Express, SQLite
+on a persistent volume, local media files on a persistent volume, and the built-in
+scheduler. PostgreSQL, Redis/BullMQ, distributed workers, and object storage are planned
+infrastructure and are not wired into the current runtime.
 
-## Target deployment shape
+## Requirements
 
-- **Web/API:** the existing Express application, behind HTTPS on a managed container or VM.
-- **Database:** begin with the existing SQLite file on a persistent volume. Do not place
-  SQLite on an ephemeral container filesystem or a shared network filesystem.
-- **Object storage:** store generated video/audio/image assets in a private S3-compatible
-  bucket (for example, AWS S3 or Cloudflare R2). Keep public access disabled.
-- **Queue/workers:** move long-running generation and FFmpeg work to dedicated workers
-  in a later phase. A durable queue such as Redis + BullMQ is the recommended target.
-- **Secrets:** inject provider keys and OAuth secrets through the hosting platform's
-  secret manager. Never commit `.env`, OAuth client files, refresh tokens, or media.
+- Docker Engine and Docker Compose.
+- A stable HTTPS domain behind a reverse proxy or managed HTTPS ingress.
+- A persistent disk/volume for `/app/data` and `/app/uploads`.
+- One Google OAuth 2.0 client of type **Web application**.
+- At least one AI text-provider key (for example Gemini or OpenAI).
 
-## Environment
+## 1. Configure Google OAuth
 
-See `.env.example` for the opt-in cloud settings. Cloud mode must not be enabled until
-persistent storage, HTTPS, backups, and secret injection have been configured.
+1. In Google Cloud Console, create/select a project.
+2. Enable YouTube Data API v3 and YouTube Analytics API.
+3. Configure the OAuth consent screen and add your Google account as a test user while the app is in Testing.
+4. Create an OAuth 2.0 client with application type **Web application**.
+5. Add this exact Authorized redirect URI: `https://YOUR_DOMAIN/auth/youtube/callback`.
+6. Keep the client ID and client secret private.
 
-## YouTube web OAuth
+The cloud web flow is different from the desktop/loopback OAuth flow used by local setup.
+For a publicly used OAuth app, complete the applicable Google verification requirements
+for the scopes you request.
 
-The current credential setup is an interactive/loopback flow intended for a desktop
-installation. A hosted deployment needs a Google OAuth **Web application** client and
-an exact HTTPS redirect URI, for example:
+## 2. Prepare environment variables
 
-`https://your-domain.example/auth/youtube/callback`
+Copy the example file and generate three independent secrets:
 
-Configure the same URI in Google Cloud Console and set `YOUTUBE_REDIRECT_URI`.
-The web OAuth callback, encrypted token storage, account/channel ownership checks,
-CSRF state validation, and token rotation are a separate implementation milestone.
-Do not expose the current local token JSON file through a web route.
+```bash
+cp .env.example .env
+openssl rand -hex 32   # use one output for APP_SESSION_SECRET
+openssl rand -hex 32   # use a different output for TOKEN_ENCRYPTION_KEY
+```
 
-## Multiple channels
+Configure these values in `.env`:
 
-The first cloud milestone introduces a channel registry contract without changing the
-existing generation pipeline. Every content project, scheduled publish action, analytics
-snapshot, and approval must eventually be scoped to one channel. Channel credentials
-must be isolated per connection and encrypted at rest. A channel ID from a request must
-never be trusted as proof of authorization.
+- `CLOUD_MODE=true`
+- `APP_ADMIN_PASSWORD`: a unique password with at least 16 characters.
+- `APP_SESSION_SECRET`: at least 32 bytes; use a randomly generated value.
+- `TOKEN_ENCRYPTION_KEY`: exactly 64 hexadecimal characters (32 bytes).
+- `YOUTUBE_OAUTH_CLIENT_ID` and `YOUTUBE_OAUTH_CLIENT_SECRET`.
+- `YOUTUBE_OAUTH_REDIRECT_URI=https://YOUR_DOMAIN/auth/youtube/callback`.
+- At least one AI provider key, such as `GEMINI_API_KEY` or `OPENAI_API_KEY`.
 
-## Safety gates
+Do not commit `.env`. Store these values in your hosting provider's secret manager where
+available. Back up `TOKEN_ENCRYPTION_KEY` securely: losing it makes saved channel refresh
+tokens undecryptable. Rotating it requires re-encrypting every stored credential.
 
-- Generated content remains private/unlisted until an explicit human approval.
-- Fact review and media-rights confirmation remain required approval gates.
-- Placeholder or simulated assets must never be published.
-- Publishing must be idempotent and retry-safe.
-- Enforce per-channel quotas and global provider spend limits before queueing work.
+## 3. Start the container
 
-## Suggested rollout
+```bash
+docker compose build
+docker compose up -d
+docker compose logs -f youtube-automation-agent
+```
 
-1. Deploy the current app to a persistent single-instance environment and verify backups.
-2. Add web OAuth and a secure channel-connection model.
-3. Introduce a channel-scoped data layer and migrate existing single-channel records.
-4. Add PostgreSQL and durable queue/worker services.
-5. Move media to private object storage and make FFmpeg workers stateless.
-6. Add multi-instance scaling, observability, restore drills, and production security review.
+The container listens on port 3456 but Compose binds it to `127.0.0.1` on the host.
+Put a TLS reverse proxy in front of it and proxy to `http://127.0.0.1:3456`. Do not expose
+the container directly to the public internet without HTTPS. The application sets
+`Secure`, `HttpOnly`, and `SameSite=Lax` session-cookie attributes in cloud mode.
 
-Do not run multiple app instances against the current SQLite database. Do not enable
-publishing from an unreviewed or unapproved queue.
+The named Docker volumes `youtube-agent-data` and `youtube-agent-uploads` persist the
+database and uploaded/generated media across container recreation. Back up both volumes.
+Only run one replica because the scheduler, SQLite database and local media pipeline are
+not coordinated across multiple instances.
+
+## 4. Sign in and connect a channel
+
+1. Open `https://YOUR_DOMAIN/login` and sign in with `APP_ADMIN_PASSWORD`.
+2. Open **Manage channels** from the dashboard.
+3. Choose **Connect YouTube channel** and complete Google's consent flow.
+4. The channel is saved with encrypted refresh tokens. Secrets are never returned by the
+   channel-list API.
+5. Restart the container after the first connection or after changing the default channel:
+
+```bash
+docker compose restart youtube-automation-agent
+```
+
+The selected default channel is loaded into the existing generation/publishing agents at
+startup. The channel registry and connection manager support several saved connections,
+but the content pipeline still uses one selected default channel at a time. Per-channel
+strategies, pipeline isolation and concurrent publishing are not complete yet.
+
+## 5. Verify health and logs
+
+- Health endpoint: `https://YOUR_DOMAIN/health` (public, minimal status only).
+- Owner console: `https://YOUR_DOMAIN/`.
+- Channel manager: `https://YOUR_DOMAIN/channels`.
+
+Watch logs after the first restart. A missing AI provider or connected default channel
+will leave the app in setup mode and disable generation/publishing.
+
+## Security and operations
+
+- Keep cloud mode enabled; startup fails unless owner/session/encryption and HTTPS OAuth
+  redirect settings are configured.
+- Use a strong unique owner password. The built-in login applies a basic per-process
+  rate limit and issues an eight-hour signed HTTP-only session cookie.
+- Do not put API keys or OAuth tokens in browser code, URLs, screenshots, issue reports,
+  or logs.
+- Keep generated media, the database and uploads on persistent storage.
+- Back up the database, uploads and encryption key; periodically test restoration.
+- Use one app instance only. Do not add replicas or enable autoscaling.
+- Do not enable automatic public publishing without human review. Fact review and media
+  rights confirmation remain required approval gates.
+
+## Not yet implemented
+
+`DATABASE_URL`, `REDIS_URL` and `OBJECT_STORAGE_*` are reserved for later infrastructure
+work. They are not read by the current runtime. A future cloud scale-out milestone must
+migrate all channel-owned records to channel-scoped queries, move jobs to a durable queue,
+and move media to object storage before multi-instance deployment is safe.
