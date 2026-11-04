@@ -21,7 +21,7 @@ It researches topics, writes scripts, generates narration and visuals, assembles
 
 - **You approve before anything is published.** Finished videos wait for fact review, media-rights confirmation, and your approval. Turning on autonomy doesn't skip those checks.
 - **Real output only.** Simulated or placeholder media is clearly marked and can never be approved or uploaded.
-- **Self-hosted.** Your keys, media, and channel data stay on your machine.
+- **Self-hosted or single-instance cloud deployment.** The Docker deployment uses persistent volumes and owner sign-in; distributed multi-instance hosting is not yet supported.
 - **Learns from evidence, with your sign-off.** Lessons from analytics, retention curves, and comments shape future videos only after you approve them.
 - **Your choice of providers.** Eight text providers or OpenRouter, five AI video providers, or free local slideshow rendering.
 
@@ -130,6 +130,16 @@ authorization, durable queue, and object-storage adapters are complete.
 
 - [Cloud deployment foundation](docs/cloud-deployment.md)
 - [Multi-channel architecture](docs/multi-channel-architecture.md)
+
+## Cloud deployment
+
+A Docker-based, single-instance cloud deployment is available. It uses a persistent
+SQLite volume, owner-password sign-in, Google OAuth Web application credentials and
+encrypted per-channel refresh tokens. It is not horizontally scalable yet; do not run
+multiple replicas against the current SQLite database or local media paths.
+
+See the [cloud deployment guide](docs/cloud-deployment.md) and
+[multi-channel architecture plan](docs/multi-channel-architecture.md).
 
 ## Docs
 
