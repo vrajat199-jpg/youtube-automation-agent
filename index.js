@@ -421,7 +421,7 @@ class YouTubeAutomationAgent {
     });
     this.app.use(express.static(path.join(__dirname, 'dashboard')));
 
-    if (!process.env.API_KEY) {
+    if (!process.env.API_KEY && !this.adminAuth?.enabled) {
       this.logger.warn('API_KEY is not set; mutating API routes are unprotected');
     }
     
@@ -469,6 +469,7 @@ class YouTubeAutomationAgent {
         if (!channel || channel.status !== 'connected') {
           return res.status(404).json({ success: false, error: 'Connected channel not found' });
         }
+        if (this.scheduler) await this.scheduler.pauseAutomation();
         const selected = await this.db.setDefaultChannel(channel.id);
         return res.json({ success: true, channel: selected, restartRequired: true });
       } catch (error) {
@@ -478,6 +479,8 @@ class YouTubeAutomationAgent {
 
     this.app.post('/api/channels/:channelId/disconnect', this.requireAPIKey(), async (req, res) => {
       try {
+        const selected = await this.db.getChannel(req.params.channelId);
+        if (selected?.isDefault && this.scheduler) await this.scheduler.pauseAutomation();
         const channel = await this.youtubeWebOAuth.disconnect(req.params.channelId);
         return res.json({ success: true, channel });
       } catch (error) {
@@ -1955,7 +1958,7 @@ class YouTubeAutomationAgent {
     // so the dashboard must not be reachable from the network unless asked.
     this.app.listen(PORT, HOST, () => {
       console.log(chalk.green(`\n✅ YouTube Automation Agent running on ${HOST}:${PORT}`));
-      if (!isLoopbackHost(HOST) && !process.env.API_KEY) {
+      if (!isLoopbackHost(HOST) && !process.env.API_KEY && !this.adminAuth.enabled) {
         console.log(chalk.yellow(`⚠️  HOST=${HOST} exposes the dashboard to your network without API_KEY. Set API_KEY in .env to protect generation, approval, and publishing routes.`));
       }
       console.log(chalk.gray('─'.repeat(50)));
