@@ -22,6 +22,7 @@ class SystemTest {
       { name: 'Database Connection', test: () => this.testDatabase() },
       { name: 'Multi-Channel Registry Persistence', test: () => this.testChannelRegistry() },
       { name: 'Secret Encryption', test: () => this.testSecretEncryption() },
+      { name: 'Encrypted YouTube Token Refresh Persistence', test: () => this.testCredentialTokenRefreshPersistence() },
       { name: 'Cloud Admin Sessions', test: () => this.testCloudAdminSessions() },
       { name: 'Single-Use OAuth State', test: () => this.testOAuthStatePersistence() },
       { name: 'Default Channel Failover', test: () => this.testDefaultChannelFailover() },
@@ -217,6 +218,28 @@ class SystemTest {
       invalidKeyBlocked = true;
     }
     if (!invalidKeyBlocked) throw new Error('Invalid encryption key format was accepted');
+  }
+
+  async testCredentialTokenRefreshPersistence() {
+    const manager = new CredentialManager();
+    manager.credentials.youtube = {
+      client_id: 'test-client',
+      client_secret: 'test-secret',
+      redirect_uris: ['http://127.0.0.1']
+    };
+    manager.tokens.youtube = { access_token: 'old-access', refresh_token: 'persisted-refresh' };
+    let saved = null;
+    manager.onYouTubeTokensUpdated = async tokens => { saved = { ...tokens }; };
+    const oauth = manager.getYouTubeAuth();
+    const listener = oauth.listeners('tokens')[0];
+    if (typeof listener !== 'function') throw new Error('Credential manager did not register a token-refresh listener');
+    await listener({ access_token: 'new-access', expiry_date: Date.now() + 3600000 });
+    if (manager.tokens.youtube.access_token !== 'new-access' || saved?.access_token !== 'new-access') {
+      throw new Error('Refreshed access token was not passed to secure storage');
+    }
+    if (saved.refresh_token !== 'persisted-refresh') {
+      throw new Error('Refresh token was not retained while persisting refreshed credentials');
+    }
   }
 
   async testCloudAdminSessions() {
