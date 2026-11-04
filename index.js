@@ -1954,8 +1954,7 @@ class YouTubeAutomationAgent {
     if (!isLoopbackHost(HOST) && !this.adminAuth.enabled && !process.env.API_KEY) {
       throw new Error('Refusing remote bind without CLOUD_MODE owner authentication or API_KEY');
     }
-    // Loopback by default for local installs; cloud mode must be served behind HTTPS.
-    // so the dashboard must not be reachable from the network unless asked.
+    // Local installs bind to loopback. Cloud Compose exposes the app only to a TLS reverse proxy.
     this.app.listen(PORT, HOST, () => {
       console.log(chalk.green(`\n✅ YouTube Automation Agent running on ${HOST}:${PORT}`));
       if (!isLoopbackHost(HOST) && !process.env.API_KEY && !this.adminAuth.enabled) {
