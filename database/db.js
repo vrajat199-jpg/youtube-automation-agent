@@ -548,6 +548,24 @@ class Database {
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`,
+      `CREATE TABLE IF NOT EXISTS channel_registry (
+        id TEXT PRIMARY KEY,
+        youtube_channel_id TEXT UNIQUE,
+        display_name TEXT NOT NULL,
+        handle TEXT,
+        avatar_url TEXT,
+        status TEXT NOT NULL DEFAULT 'unconnected'
+          CHECK(status IN ('unconnected', 'connected', 'reauthorization_required', 'disconnected')),
+        default_privacy_status TEXT NOT NULL DEFAULT 'private'
+          CHECK(default_privacy_status IN ('private', 'unlisted', 'public')),
+        formats TEXT NOT NULL DEFAULT '["long_form","shorts"]',
+        approval_required INTEGER NOT NULL DEFAULT 1,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_channel_registry_status
+       ON channel_registry(status, is_default)`,
       `CREATE TABLE IF NOT EXISTS content_ideas (
         id TEXT PRIMARY KEY,
         topic TEXT NOT NULL,
@@ -711,6 +729,139 @@ class Database {
         process.env.CHANNEL_TIMEZONE || 'America/Chicago'
       ]
     );
+  }
+
+    const configuredPrivacy = String(process.env.DEFAULT_PRIVACY_STATUS || 'private').toLowerCase();
+    const safePrivacy = ['private', 'unlisted', 'public'].includes(configuredPrivacy)
+      ? configuredPrivacy
+      : 'private';
+    await this.executeQuery(
+      `INSERT OR IGNORE INTO channel_registry (
+        id, youtube_channel_id, display_name, status, default_privacy_status,
+        formats, approval_required, is_default
+      )
+      SELECT 'legacy-default', NULL, channel_name, 'unconnected', ?,
+        '["long_form","shorts"]', 1, 1
+      FROM channel_profiles WHERE id = 'default'`,
+      [safePrivacy]
+    );
+  }
+
+  parseChannelRegistryRow(row) {
+    if (!row) return null;
+    let formats = [];
+    try {
+      formats = JSON.parse(row.formats || '["long_form","shorts"]');
+    } catch {
+      formats = ['long_form', 'shorts'];
+    }
+    return {
+      ...row,
+      formats,
+      approvalRequired: Boolean(row.approval_required),
+      isDefault: Boolean(row.is_default)
+    };
+  }
+
+  async saveChannel(channel = {}) {
+    const id = String(channel.id || this.generateId('channel')).trim();
+    const displayName = String(channel.displayName || '').trim();
+    if (!id || id.length > 100) throw new Error('Channel id must be 1 to 100 characters');
+    if (!displayName || displayName.length > 120) throw new Error('Channel displayName must be 1 to 120 characters');
+
+    const youtubeChannelId = channel.youtubeChannelId == null
+      ? null
+      : String(channel.youtubeChannelId).trim() || null;
+    if (youtubeChannelId && youtubeChannelId.length > 128) {
+      throw new Error('youtubeChannelId must be 128 characters or less');
+    }
+    const status = String(channel.status || 'unconnected').toLowerCase();
+    const allowedStatuses = new Set(['unconnected', 'connected', 'reauthorization_required', 'disconnected']);
+    if (!allowedStatuses.has(status)) throw new Error('Unsupported channel connection status');
+
+    const privacy = String(channel.defaultPrivacyStatus || 'private').toLowerCase();
+    if (!['private', 'unlisted', 'public'].includes(privacy)) {
+      throw new Error('defaultPrivacyStatus must be private, unlisted, or public');
+    }
+
+    const formats = channel.formats === undefined ? ['long_form', 'shorts'] : channel.formats;
+    if (
+      !Array.isArray(formats) ||
+      formats.length === 0 ||
+      formats.some(format => !['long_form', 'shorts'].includes(format))
+    ) {
+      throw new Error('formats must contain long_form and/or shorts');
+    }
+    const uniqueFormats = [...new Set(formats)];
+    const handle = channel.handle == null ? null : String(channel.handle).trim().slice(0, 100);
+    const avatarUrl = channel.avatarUrl == null ? null : String(channel.avatarUrl).trim().slice(0, 2048);
+    const approvalRequired = channel.approvalRequired === undefined ? true : channel.approvalRequired;
+    if (typeof approvalRequired !== 'boolean') throw new Error('approvalRequired must be a boolean');
+    const isDefault = channel.isDefault === true;
+
+    if (youtubeChannelId) {
+      const duplicate = await this.getRow(
+        'SELECT id FROM channel_registry WHERE youtube_channel_id = ? AND id <> ?',
+        [youtubeChannelId, id]
+      );
+      if (duplicate) throw new Error('This YouTube channel is already registered');
+    }
+
+    if (isDefault) {
+      await this.executeQuery(
+        'UPDATE channel_registry SET is_default = 0, updated_at = datetime(\'now\') WHERE is_default = 1 AND id <> ?',
+        [id]
+      );
+    }
+
+    await this.executeQuery(
+      `INSERT INTO channel_registry (
+        id, youtube_channel_id, display_name, handle, avatar_url, status,
+        default_privacy_status, formats, approval_required, is_default
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        youtube_channel_id = excluded.youtube_channel_id,
+        display_name = excluded.display_name,
+        handle = excluded.handle,
+        avatar_url = excluded.avatar_url,
+        status = excluded.status,
+        default_privacy_status = excluded.default_privacy_status,
+        formats = excluded.formats,
+        approval_required = excluded.approval_required,
+        is_default = excluded.is_default,
+        updated_at = datetime('now')`,
+      [
+        id, youtubeChannelId, displayName, handle, avatarUrl, status, privacy,
+        JSON.stringify(uniqueFormats), Number(approvalRequired), Number(isDefault)
+      ]
+    );
+    return this.getChannel(id);
+  }
+
+  async getChannel(id) {
+    return this.parseChannelRegistryRow(
+      await this.getRow('SELECT * FROM channel_registry WHERE id = ?', [id])
+    );
+  }
+
+  async listChannels() {
+    const rows = await this.getAllRows(
+      'SELECT * FROM channel_registry ORDER BY is_default DESC, created_at ASC, id ASC'
+    );
+    return rows.map(row => this.parseChannelRegistryRow(row));
+  }
+
+  async setDefaultChannel(id) {
+    const channel = await this.getChannel(id);
+    if (!channel) throw new Error('Channel not found');
+    await this.executeQuery(
+      'UPDATE channel_registry SET is_default = 0, updated_at = datetime(\'now\') WHERE is_default = 1'
+    );
+    await this.executeQuery(
+      'UPDATE channel_registry SET is_default = 1, updated_at = datetime(\'now\') WHERE id = ?',
+      [id]
+    );
+    return this.getChannel(id);
   }
 
   // Content Strategy methods
