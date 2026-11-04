@@ -109,6 +109,8 @@ class YouTubeAutomationAgent {
         const defaultChannel = await this.db.getDefaultChannel();
         if (defaultChannel?.status === 'connected') {
           this.credentials.tokens.youtube = await this.youtubeWebOAuth.getChannelTokens(defaultChannel.id);
+          this.credentials.onYouTubeTokensUpdated = tokens =>
+            this.youtubeWebOAuth.saveChannelTokens(defaultChannel.id, tokens);
         } else {
           delete this.credentials.tokens.youtube;
         }
