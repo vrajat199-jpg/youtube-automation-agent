@@ -21,6 +21,9 @@ class SystemTest {
     const tests = [
       { name: 'Database Connection', test: () => this.testDatabase() },
       { name: 'Multi-Channel Registry Persistence', test: () => this.testChannelRegistry() },
+      { name: 'Secret Encryption', test: () => this.testSecretEncryption() },
+      { name: 'Cloud Admin Sessions', test: () => this.testCloudAdminSessions() },
+      { name: 'Single-Use OAuth State', test: () => this.testOAuthStatePersistence() },
       { name: 'Production Persistence', test: () => this.testProductionPersistence() },
       { name: 'Automation Events Table', test: () => this.testAutomationEventsTable() },
       { name: 'Local Activation Metrics', test: () => this.testActivationMetrics() },
@@ -185,6 +188,84 @@ class SystemTest {
       await db.close();
     }
     this.logger.info('Multi-channel registry persistence test completed successfully');
+  }
+
+  async testSecretEncryption() {
+    const assert = require('assert');
+    const { encryptJson, decryptJson } = require('./utils/secret-crypto');
+    const env = { TOKEN_ENCRYPTION_KEY: 'a'.repeat(64) };
+    const original = { refresh_token: 'do-not-store-this-in-plaintext', expires_in: 3600 };
+    const encrypted = encryptJson(original, env);
+    if (encrypted.includes(original.refresh_token)) throw new Error('Encrypted payload contains the original secret');
+    assert.deepStrictEqual(decryptJson(encrypted, env), original);
+
+    const parts = encrypted.split('.');
+    parts[3] = (parts[3][0] === 'A' ? 'B' : 'A') + parts[3].slice(1);
+    let tamperBlocked = false;
+    try {
+      decryptJson(parts.join('.'), env);
+    } catch {
+      tamperBlocked = true;
+    }
+    if (!tamperBlocked) throw new Error('Tampered ciphertext was not rejected');
+
+    let invalidKeyBlocked = false;
+    try {
+      encryptJson(original, { TOKEN_ENCRYPTION_KEY: 'not-a-key' });
+    } catch {
+      invalidKeyBlocked = true;
+    }
+    if (!invalidKeyBlocked) throw new Error('Invalid encryption key format was accepted');
+  }
+
+  async testCloudAdminSessions() {
+    const { AdminAuth } = require('./utils/admin-auth');
+    const env = {
+      CLOUD_MODE: 'true',
+      APP_ADMIN_PASSWORD: 'use-a-long-test-password-here',
+      APP_SESSION_SECRET: 'a'.repeat(40),
+      TOKEN_ENCRYPTION_KEY: 'b'.repeat(64),
+      YOUTUBE_OAUTH_CLIENT_ID: 'test-client',
+      YOUTUBE_OAUTH_CLIENT_SECRET: 'test-secret',
+      YOUTUBE_OAUTH_REDIRECT_URI: 'https://example.test/auth/youtube/callback'
+    };
+    const auth = new AdminAuth(env);
+    auth.validateConfiguration();
+    const now = Date.now();
+    const token = auth.createSessionToken(now);
+    if (!auth.verifySessionToken(token, now + 1000)) throw new Error('Valid admin session was rejected');
+    if (auth.verifySessionToken(token, now + 9 * 60 * 60 * 1000)) throw new Error('Expired admin session was accepted');
+    if (auth.verifySessionToken(token + 'tampered', now)) throw new Error('Tampered admin session was accepted');
+    if (!auth.cookieHeader(token).includes('HttpOnly') || !auth.cookieHeader(token).includes('Secure')) {
+      throw new Error('Cloud admin cookie is missing secure attributes');
+    }
+    let invalidRedirectBlocked = false;
+    try {
+      new AdminAuth({ ...env, YOUTUBE_OAUTH_REDIRECT_URI: 'http://example.test/callback' }).validateConfiguration();
+    } catch {
+      invalidRedirectBlocked = true;
+    }
+    if (!invalidRedirectBlocked) throw new Error('Non-HTTPS cloud OAuth redirect was accepted');
+  }
+
+  async testOAuthStatePersistence() {
+    const crypto = require('crypto');
+    const db = new Database();
+    await db.initialize();
+    const stateHash = crypto.createHash('sha256').update('oauth-state-test-' + Date.now()).digest('hex');
+    try {
+      await db.createOAuthState(stateHash, new Date(Date.now() + 60 * 1000).toISOString());
+      if (!(await db.consumeOAuthState(stateHash))) throw new Error('Valid OAuth state was not consumed');
+      if (await db.consumeOAuthState(stateHash)) throw new Error('OAuth state replay was not blocked');
+
+      const expiredHash = crypto.createHash('sha256').update('oauth-expired-test-' + Date.now()).digest('hex');
+      await db.createOAuthState(expiredHash, new Date(Date.now() - 60 * 1000).toISOString());
+      if (await db.consumeOAuthState(expiredHash)) throw new Error('Expired OAuth state was accepted');
+      await db.executeQuery('DELETE FROM oauth_states WHERE state_hash IN (?, ?)', [stateHash, expiredHash]);
+    } finally {
+      await db.executeQuery('DELETE FROM oauth_states WHERE state_hash = ?', [stateHash]);
+      await db.close();
+    }
   }
 
   async testProductionPersistence() {
