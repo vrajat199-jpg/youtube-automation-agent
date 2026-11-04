@@ -1,4 +1,16 @@
-# Multi-channel architecture (implementation plan)
+# Multi-channel architecture
+
+## Implementation status
+
+Implemented in this branch: a persistent channel registry, YouTube Web OAuth connect
+flow, one-time OAuth state validation, encrypted per-channel refresh-token storage,
+disconnect/revoke, and a selectable default channel.
+
+Not implemented yet: workspace/user memberships, per-channel strategies, channel IDs
+on every content/job/schedule/analytics row, or concurrent per-channel workers. The
+existing production pipeline uses one selected default channel at a time and must be
+restarted after changing the default. The registry is not yet a complete multi-tenant
+authorization boundary.
 
 ## Core rule
 
@@ -41,10 +53,13 @@ caption settings and metadata while reusing the same approval and publishing gat
 
 ## Migration strategy
 
-The existing application assumes one channel. First introduce a channel registry and
-a compatibility adapter that resolves the configured legacy channel. Then add
-`channel_id` to channel-owned tables and migrate existing rows to the legacy channel.
-Only after migration and regression tests should the UI expose channel switching.
+The application still assumes one active channel for generation and publishing.
+The registry and channel manager are now present, but they do not by themselves provide
+full data isolation. Next, add `channel_id` to channel-owned tables and migrate existing
+rows to the legacy channel. Then route every strategy, job, production, approval,
+schedule, analytics, and comment query through a verified active channel context.
+Only after those migrations and regression tests should concurrent multi-channel
+publishing be enabled.
 
 This file is an architecture contract, not a claim that multi-tenant enforcement is
 already implemented.
