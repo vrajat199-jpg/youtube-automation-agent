@@ -5,7 +5,7 @@ const { Logger } = require('../utils/logger');
 
 class Database {
   constructor() {
-    this.dbPath = path.join(__dirname, '..', 'data', 'youtube_automation.db');
+    this.dbPath = process.env.DB_PATH ? path.resolve(process.env.DB_PATH) : path.join(__dirname, '..', 'data', 'youtube_automation.db');
     this.db = null;
     this.logger = new Logger('Database');
   }
@@ -566,6 +566,21 @@ class Database {
       )`,
       `CREATE INDEX IF NOT EXISTS idx_channel_registry_status
        ON channel_registry(status, is_default)`,
+      `CREATE TABLE IF NOT EXISTS channel_credentials (
+        channel_id TEXT PRIMARY KEY,
+        encrypted_tokens TEXT NOT NULL,
+        encryption_version TEXT NOT NULL DEFAULT 'v1',
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (channel_id) REFERENCES channel_registry(id) ON DELETE CASCADE
+      )`,
+      `CREATE TABLE IF NOT EXISTS oauth_states (
+        state_hash TEXT PRIMARY KEY,
+        expires_at TEXT NOT NULL,
+        consumed_at TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_oauth_states_expiry
+       ON oauth_states(expires_at, consumed_at)`,
       `CREATE TABLE IF NOT EXISTS content_ideas (
         id TEXT PRIMARY KEY,
         topic TEXT NOT NULL,
@@ -868,6 +883,77 @@ class Database {
       [id]
     );
     return this.getChannel(id);
+  }
+
+  async createOAuthState(stateHash, expiresAt) {
+    if (!/^[a-f0-9]{64}$/i.test(String(stateHash || ''))) {
+      throw new Error('OAuth state hash must be a SHA-256 hex digest');
+    }
+    const date = new Date(expiresAt);
+    if (Number.isNaN(date.getTime())) throw new Error('OAuth state expiry must be a valid date');
+    const sqlDate = date.toISOString().replace('T', ' ').replace('Z', '');
+    await this.executeQuery("DELETE FROM oauth_states WHERE consumed_at IS NOT NULL OR expires_at <= datetime('now')");
+    await this.executeQuery(
+      'INSERT INTO oauth_states (state_hash, expires_at) VALUES (?, ?)',
+      [stateHash, sqlDate]
+    );
+  }
+
+  async consumeOAuthState(stateHash) {
+    if (!/^[a-f0-9]{64}$/i.test(String(stateHash || ''))) return false;
+    const result = await this.executeQuery(
+      "UPDATE oauth_states SET consumed_at = datetime('now') WHERE state_hash = ? AND consumed_at IS NULL AND expires_at > datetime('now')",
+      [stateHash]
+    );
+    return result.changes === 1;
+  }
+
+  async saveChannelCredentials(channelId, encryptedTokens) {
+    if (!channelId || !encryptedTokens) throw new Error('Channel id and encrypted token payload are required');
+    const channel = await this.getChannel(channelId);
+    if (!channel) throw new Error('Cannot save credentials for an unknown channel');
+    await this.executeQuery(
+      \`INSERT INTO channel_credentials (channel_id, encrypted_tokens, encryption_version)
+       VALUES (?, ?, 'v1')
+       ON CONFLICT(channel_id) DO UPDATE SET
+         encrypted_tokens = excluded.encrypted_tokens,
+         encryption_version = excluded.encryption_version,
+         updated_at = datetime('now')\`,
+      [channelId, encryptedTokens]
+    );
+    return this.getChannelCredentials(channelId);
+  }
+
+  async getChannelCredentials(channelId) {
+    return this.getRow(
+      'SELECT channel_id, encrypted_tokens, encryption_version, updated_at FROM channel_credentials WHERE channel_id = ?',
+      [channelId]
+    );
+  }
+
+  async deleteChannelCredentials(channelId) {
+    await this.executeQuery('DELETE FROM channel_credentials WHERE channel_id = ?', [channelId]);
+  }
+
+  async getChannelByYoutubeId(youtubeChannelId) {
+    return this.parseChannelRegistryRow(
+      await this.getRow('SELECT * FROM channel_registry WHERE youtube_channel_id = ?', [youtubeChannelId])
+    );
+  }
+
+  async getDefaultChannel() {
+    return this.parseChannelRegistryRow(
+      await this.getRow('SELECT * FROM channel_registry ORDER BY is_default DESC, created_at ASC, id ASC LIMIT 1')
+    );
+  }
+
+  async updateChannelStatus(channelId, status) {
+    const allowed = new Set(['unconnected', 'connected', 'reauthorization_required', 'disconnected']);
+    if (!allowed.has(status)) throw new Error('Unsupported channel connection status');
+    await this.executeQuery(
+      "UPDATE channel_registry SET status = ?, updated_at = datetime('now') WHERE id = ?",
+      [status, channelId]
+    );
   }
 
   // Content Strategy methods
