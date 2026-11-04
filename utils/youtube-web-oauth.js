@@ -113,6 +113,11 @@ class YouTubeWebOAuthService {
     return decryptJson(record.encrypted_tokens, this.env);
   }
 
+  async saveChannelTokens(channelId, tokens) {
+    if (!tokens || typeof tokens !== 'object') throw new Error('YouTube tokens are required');
+    return this.db.saveChannelCredentials(channelId, encryptJson(tokens, this.env));
+  }
+
   async getAuthClient(channelId) {
     const channel = await this.db.getChannel(channelId);
     if (!channel || channel.status !== 'connected') throw new Error('Channel is not connected');
@@ -124,7 +129,7 @@ class YouTubeWebOAuthService {
     oauth.on('tokens', async updated => {
       try {
         currentTokens = { ...currentTokens, ...updated };
-        await this.db.saveChannelCredentials(channelId, encryptJson(currentTokens, this.env));
+        await this.saveChannelTokens(channelId, currentTokens);
       } catch (error) {
         this.logger.error('Failed to persist refreshed YouTube credentials for channel ' + channelId + ': ' + error.message);
       }
