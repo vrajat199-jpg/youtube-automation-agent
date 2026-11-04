@@ -6,8 +6,8 @@ yarn-error.log*
 
 # Environment variables and credentials
 .env
-.env.local
-.env.production
+.env.*
+!.env.example
 config/credentials.json
 config/tokens.json
 config/*.key
