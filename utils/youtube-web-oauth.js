@@ -119,11 +119,12 @@ class YouTubeWebOAuthService {
     const tokens = await this.getChannelTokens(channelId);
     if (!tokens) throw new Error('Channel credentials are missing; reconnect this channel');
     const oauth = this.createOAuthClient();
-    oauth.setCredentials(tokens);
+    let currentTokens = { ...tokens };
+    oauth.setCredentials(currentTokens);
     oauth.on('tokens', async updated => {
       try {
-        const merged = { ...tokens, ...updated };
-        await this.db.saveChannelCredentials(channelId, encryptJson(merged, this.env));
+        currentTokens = { ...currentTokens, ...updated };
+        await this.db.saveChannelCredentials(channelId, encryptJson(currentTokens, this.env));
       } catch (error) {
         this.logger.error('Failed to persist refreshed YouTube credentials for channel ' + channelId + ': ' + error.message);
       }
