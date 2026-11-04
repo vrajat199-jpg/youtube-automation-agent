@@ -73,8 +73,9 @@ not coordinated across multiple instances.
 1. Open `https://YOUR_DOMAIN/login` and sign in with `APP_ADMIN_PASSWORD`.
 2. Open **Manage channels** from the dashboard.
 3. Choose **Connect YouTube channel** and complete Google's consent flow.
-4. The channel is saved with encrypted refresh tokens. Secrets are never returned by the
-   channel-list API.
+4. The Google account chooser appears for each connection, so you can sign in with the
+   Google account that owns or manages the next channel. The channel is saved with
+   encrypted refresh tokens. Secrets are never returned by the channel-list API.
 5. Restart the container after the first connection or after changing the default channel:
 
 ```bash
