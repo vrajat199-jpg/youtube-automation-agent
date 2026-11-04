@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "channels": [
+    {
+      "key": "replace-with-a-local-channel-key",
+      "displayName": "Example channel",
+      "youtubeChannelId": null,
+      "status": "unconnected",
+      "defaultPrivacyStatus": "private",
+      "formats": ["long_form", "shorts"],
+      "approvalRequired": true
+    }
+  ]
+}
