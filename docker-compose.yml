@@ -6,6 +6,7 @@ services:
     image: youtube-automation-agent:local
     container_name: youtube-automation-agent
     init: true
+    shm_size: 1gb
     restart: unless-stopped
     env_file:
       - .env
