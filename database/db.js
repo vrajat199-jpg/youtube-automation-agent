@@ -729,7 +729,6 @@ class Database {
         process.env.CHANNEL_TIMEZONE || 'America/Chicago'
       ]
     );
-  }
 
     const configuredPrivacy = String(process.env.DEFAULT_PRIVACY_STATUS || 'private').toLowerCase();
     const safePrivacy = ['private', 'unlisted', 'public'].includes(configuredPrivacy)
@@ -757,6 +756,10 @@ class Database {
     }
     return {
       ...row,
+      youtubeChannelId: row.youtube_channel_id,
+      displayName: row.display_name,
+      avatarUrl: row.avatar_url,
+      defaultPrivacyStatus: row.default_privacy_status,
       formats,
       approvalRequired: Boolean(row.approval_required),
       isDefault: Boolean(row.is_default)
@@ -797,7 +800,10 @@ class Database {
     const avatarUrl = channel.avatarUrl == null ? null : String(channel.avatarUrl).trim().slice(0, 2048);
     const approvalRequired = channel.approvalRequired === undefined ? true : channel.approvalRequired;
     if (typeof approvalRequired !== 'boolean') throw new Error('approvalRequired must be a boolean');
-    const isDefault = channel.isDefault === true;
+    const existingChannel = await this.getChannel(id);
+    const isDefault = channel.isDefault === undefined
+      ? Boolean(existingChannel?.isDefault)
+      : channel.isDefault === true;
 
     if (youtubeChannelId) {
       const duplicate = await this.getRow(
