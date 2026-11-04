@@ -246,6 +246,13 @@ class SystemTest {
       invalidRedirectBlocked = true;
     }
     if (!invalidRedirectBlocked) throw new Error('Non-HTTPS cloud OAuth redirect was accepted');
+    let invalidPathBlocked = false;
+    try {
+      new AdminAuth({ ...env, YOUTUBE_OAUTH_REDIRECT_URI: 'https://example.test/wrong-path' }).validateConfiguration();
+    } catch {
+      invalidPathBlocked = true;
+    }
+    if (!invalidPathBlocked) throw new Error('Incorrect cloud OAuth callback path was accepted');
   }
 
   async testOAuthStatePersistence() {
