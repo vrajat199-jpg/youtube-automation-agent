@@ -121,6 +121,16 @@ The scheduler starts with `npm start` and uses the server's local time.
 
 Details are in the [feature guide](docs/features.md#automation-schedule).
 
+## Cloud and multiple channels
+
+The current application still runs as a single-instance Express/SQLite deployment. The
+cloud and multi-channel implementation is being introduced incrementally; do not run
+multiple replicas or switch on remote publishing until the web OAuth, channel-scoped
+authorization, durable queue, and object-storage adapters are complete.
+
+- [Cloud deployment foundation](docs/cloud-deployment.md)
+- [Multi-channel architecture](docs/multi-channel-architecture.md)
+
 ## Docs
 
 - [Feature guide](docs/features.md): a walkthrough of every studio and gate.
