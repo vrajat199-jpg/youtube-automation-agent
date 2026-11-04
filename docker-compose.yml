@@ -1,0 +1,39 @@
+services:
+  youtube-automation-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: youtube-automation-agent:local
+    container_name: youtube-automation-agent
+    init: true
+    shm_size: 1gb
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3456
+      DB_PATH: /app/data/youtube_automation.db
+      CLOUD_MODE: "true"
+    ports:
+      # Bind to localhost. Put a TLS reverse proxy in front of this port.
+      - "127.0.0.1:3456:3456"
+    volumes:
+      - youtube-agent-data:/app/data
+      - youtube-agent-uploads:/app/uploads
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3456/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+
+volumes:
+  youtube-agent-data:
+  youtube-agent-uploads:

@@ -20,6 +20,7 @@ class CredentialManager {
     this.tokensPath = path.join(__dirname, '..', 'config', 'tokens.json');
     this.credentials = {};
     this.tokens = {};
+    this.onYouTubeTokensUpdated = null;
   }
 
   async initialize() {
@@ -155,6 +156,18 @@ class CredentialManager {
     );
 
     oauth2Client.setCredentials(this.tokens.youtube);
+    oauth2Client.on('tokens', async updated => {
+      this.tokens.youtube = { ...(this.tokens.youtube || {}), ...updated };
+      try {
+        if (typeof this.onYouTubeTokensUpdated === 'function') {
+          await this.onYouTubeTokensUpdated(this.tokens.youtube);
+        } else {
+          await this.saveTokens();
+        }
+      } catch (error) {
+        this.logger.error('Failed to persist refreshed YouTube credentials:', error);
+      }
+    });
     return oauth2Client;
   }
 

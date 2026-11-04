@@ -20,6 +20,12 @@ class SystemTest {
     
     const tests = [
       { name: 'Database Connection', test: () => this.testDatabase() },
+      { name: 'Multi-Channel Registry Persistence', test: () => this.testChannelRegistry() },
+      { name: 'Secret Encryption', test: () => this.testSecretEncryption() },
+      { name: 'Encrypted YouTube Token Refresh Persistence', test: () => this.testCredentialTokenRefreshPersistence() },
+      { name: 'Cloud Admin Sessions', test: () => this.testCloudAdminSessions() },
+      { name: 'Single-Use OAuth State', test: () => this.testOAuthStatePersistence() },
+      { name: 'Default Channel Failover', test: () => this.testDefaultChannelFailover() },
       { name: 'Production Persistence', test: () => this.testProductionPersistence() },
       { name: 'Automation Events Table', test: () => this.testAutomationEventsTable() },
       { name: 'Local Activation Metrics', test: () => this.testActivationMetrics() },
@@ -121,6 +127,222 @@ class SystemTest {
     
     await db.close();
     this.logger.info('Database test completed successfully');
+  }
+
+  async testChannelRegistry() {
+    const db = new Database();
+    await db.initialize();
+    const channelId = `channel_registry_test_${Date.now()}`;
+    const secondId = `${channelId}_duplicate`;
+
+    try {
+      const legacy = await db.getChannel('legacy-default');
+      if (!legacy || !legacy.isDefault || !legacy.approvalRequired) {
+        throw new Error('Legacy channel was not seeded as the approved default channel');
+      }
+
+      const channel = await db.saveChannel({
+        id: channelId,
+        youtubeChannelId: `UC-test-${Date.now()}`,
+        displayName: 'Registry test channel',
+        handle: '@registry-test',
+        status: 'connected',
+        defaultPrivacyStatus: 'private',
+        formats: ['long_form', 'shorts'],
+        approvalRequired: true
+      });
+      if (!channel || channel.displayName !== 'Registry test channel' || !channel.approvalRequired) {
+        throw new Error('Channel registry did not persist channel metadata and approval gate');
+      }
+      if (channel.formats.length !== 2 || channel.status !== 'connected') {
+        throw new Error('Channel registry did not persist formats or connection status');
+      }
+
+      let duplicateBlocked = false;
+      try {
+        await db.saveChannel({
+          id: secondId,
+          youtubeChannelId: channel.youtube_channel_id,
+          displayName: 'Duplicate channel'
+        });
+      } catch (error) {
+        duplicateBlocked = /already registered/.test(error.message);
+      }
+      if (!duplicateBlocked) throw new Error('Duplicate YouTube channel registration was not blocked');
+
+      const selected = await db.setDefaultChannel(channelId);
+      if (!selected.isDefault) throw new Error('Default channel selection was not persisted');
+      const channels = await db.listChannels();
+      if (channels.filter(item => item.isDefault).length !== 1) {
+        throw new Error('Channel registry must have exactly one selected default channel');
+      }
+
+      let unsafePrivacyBlocked = false;
+      try {
+        await db.saveChannel({ id: secondId, displayName: 'Unsafe privacy', defaultPrivacyStatus: 'invalid' });
+      } catch (error) {
+        unsafePrivacyBlocked = /defaultPrivacyStatus/.test(error.message);
+      }
+      if (!unsafePrivacyBlocked) throw new Error('Unsupported default privacy status was accepted');
+    } finally {
+      await db.executeQuery('DELETE FROM channel_registry WHERE id IN (?, ?)', [channelId, secondId]);
+      await db.setDefaultChannel('legacy-default');
+      await db.close();
+    }
+    this.logger.info('Multi-channel registry persistence test completed successfully');
+  }
+
+  async testSecretEncryption() {
+    const assert = require('assert');
+    const { encryptJson, decryptJson } = require('./utils/secret-crypto');
+    const env = { TOKEN_ENCRYPTION_KEY: 'a'.repeat(64) };
+    const original = { refresh_token: 'do-not-store-this-in-plaintext', expires_in: 3600 };
+    const encrypted = encryptJson(original, env);
+    if (encrypted.includes(original.refresh_token)) throw new Error('Encrypted payload contains the original secret');
+    assert.deepStrictEqual(decryptJson(encrypted, env), original);
+
+    const parts = encrypted.split('.');
+    parts[3] = (parts[3][0] === 'A' ? 'B' : 'A') + parts[3].slice(1);
+    let tamperBlocked = false;
+    try {
+      decryptJson(parts.join('.'), env);
+    } catch {
+      tamperBlocked = true;
+    }
+    if (!tamperBlocked) throw new Error('Tampered ciphertext was not rejected');
+
+    let invalidKeyBlocked = false;
+    try {
+      encryptJson(original, { TOKEN_ENCRYPTION_KEY: 'not-a-key' });
+    } catch {
+      invalidKeyBlocked = true;
+    }
+    if (!invalidKeyBlocked) throw new Error('Invalid encryption key format was accepted');
+  }
+
+  async testCredentialTokenRefreshPersistence() {
+    const manager = new CredentialManager();
+    manager.credentials.youtube = {
+      client_id: 'test-client',
+      client_secret: 'test-secret',
+      redirect_uris: ['http://127.0.0.1']
+    };
+    manager.tokens.youtube = { access_token: 'old-access', refresh_token: 'persisted-refresh' };
+    let saved = null;
+    manager.onYouTubeTokensUpdated = async tokens => { saved = { ...tokens }; };
+    const oauth = manager.getYouTubeAuth();
+    const listener = oauth.listeners('tokens')[0];
+    if (typeof listener !== 'function') throw new Error('Credential manager did not register a token-refresh listener');
+    await listener({ access_token: 'new-access', expiry_date: Date.now() + 3600000 });
+    if (manager.tokens.youtube.access_token !== 'new-access' || saved?.access_token !== 'new-access') {
+      throw new Error('Refreshed access token was not passed to secure storage');
+    }
+    if (saved.refresh_token !== 'persisted-refresh') {
+      throw new Error('Refresh token was not retained while persisting refreshed credentials');
+    }
+  }
+
+  async testCloudAdminSessions() {
+    const { AdminAuth } = require('./utils/admin-auth');
+    const env = {
+      CLOUD_MODE: 'true',
+      APP_ADMIN_PASSWORD: 'use-a-long-test-password-here',
+      APP_SESSION_SECRET: 'a'.repeat(40),
+      TOKEN_ENCRYPTION_KEY: 'b'.repeat(64),
+      YOUTUBE_OAUTH_CLIENT_ID: 'test-client',
+      YOUTUBE_OAUTH_CLIENT_SECRET: 'test-secret',
+      YOUTUBE_OAUTH_REDIRECT_URI: 'https://example.test/auth/youtube/callback'
+    };
+    const auth = new AdminAuth(env);
+    auth.validateConfiguration();
+    const now = Date.now();
+    const token = auth.createSessionToken(now);
+    if (!auth.verifySessionToken(token, now + 1000)) throw new Error('Valid admin session was rejected');
+    if (auth.verifySessionToken(token, now + 9 * 60 * 60 * 1000)) throw new Error('Expired admin session was accepted');
+    if (auth.verifySessionToken(token + 'tampered', now)) throw new Error('Tampered admin session was accepted');
+    if (!auth.cookieHeader(token).includes('HttpOnly') || !auth.cookieHeader(token).includes('Secure')) {
+      throw new Error('Cloud admin cookie is missing secure attributes');
+    }
+    let invalidRedirectBlocked = false;
+    try {
+      new AdminAuth({ ...env, YOUTUBE_OAUTH_REDIRECT_URI: 'http://example.test/callback' }).validateConfiguration();
+    } catch {
+      invalidRedirectBlocked = true;
+    }
+    if (!invalidRedirectBlocked) throw new Error('Non-HTTPS cloud OAuth redirect was accepted');
+    let invalidPathBlocked = false;
+    try {
+      new AdminAuth({ ...env, YOUTUBE_OAUTH_REDIRECT_URI: 'https://example.test/wrong-path' }).validateConfiguration();
+    } catch {
+      invalidPathBlocked = true;
+    }
+    if (!invalidPathBlocked) throw new Error('Incorrect cloud OAuth callback path was accepted');
+  }
+
+  async testOAuthStatePersistence() {
+    const crypto = require('crypto');
+    const db = new Database();
+    await db.initialize();
+    const stateHash = crypto.createHash('sha256').update('oauth-state-test-' + Date.now()).digest('hex');
+    try {
+      await db.createOAuthState(stateHash, new Date(Date.now() + 60 * 1000).toISOString());
+      if (!(await db.consumeOAuthState(stateHash))) throw new Error('Valid OAuth state was not consumed');
+      if (await db.consumeOAuthState(stateHash)) throw new Error('OAuth state replay was not blocked');
+
+      const expiredHash = crypto.createHash('sha256').update('oauth-expired-test-' + Date.now()).digest('hex');
+      await db.createOAuthState(expiredHash, new Date(Date.now() - 60 * 1000).toISOString());
+      if (await db.consumeOAuthState(expiredHash)) throw new Error('Expired OAuth state was accepted');
+      await db.executeQuery('DELETE FROM oauth_states WHERE state_hash IN (?, ?)', [stateHash, expiredHash]);
+    } finally {
+      await db.executeQuery('DELETE FROM oauth_states WHERE state_hash = ?', [stateHash]);
+      await db.close();
+    }
+  }
+
+  async testDefaultChannelFailover() {
+    const { YouTubeWebOAuthService } = require('./utils/youtube-web-oauth');
+    const db = new Database();
+    await db.initialize();
+    const suffix = Date.now();
+    const firstId = 'failover_first_' + suffix;
+    const secondId = 'failover_second_' + suffix;
+
+    try {
+      await db.saveChannel({
+        id: firstId,
+        youtubeChannelId: 'UC-first-' + suffix,
+        displayName: 'First connected channel',
+        status: 'connected',
+        isDefault: true
+      });
+      await db.saveChannel({
+        id: secondId,
+        youtubeChannelId: 'UC-second-' + suffix,
+        displayName: 'Second connected channel',
+        status: 'connected',
+        isDefault: false
+      });
+
+      const service = new YouTubeWebOAuthService({ db, env: {} });
+      await service.disconnect(firstId);
+      const channels = await db.listChannels();
+      const replacement = channels.find(channel => channel.id === secondId);
+      const disconnected = await db.getChannel(firstId);
+      if (!replacement?.isDefault || replacement.status !== 'connected') {
+        throw new Error('Disconnecting the default channel did not select the next connected channel');
+      }
+      if (disconnected.status !== 'disconnected') {
+        throw new Error('Disconnected channel status was not persisted');
+      }
+      if (channels.filter(channel => channel.isDefault).length !== 1) {
+        throw new Error('Channel failover did not preserve a single default channel');
+      }
+    } finally {
+      await db.executeQuery('DELETE FROM channel_credentials WHERE channel_id IN (?, ?)', [firstId, secondId]);
+      await db.executeQuery('DELETE FROM channel_registry WHERE id IN (?, ?)', [firstId, secondId]);
+      await db.setDefaultChannel('legacy-default');
+      await db.close();
+    }
   }
 
   async testProductionPersistence() {

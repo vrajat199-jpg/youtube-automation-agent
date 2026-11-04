@@ -4,6 +4,8 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs').promises;
 const { Logger } = require('./utils/logger');
+const { AdminAuth } = require('./utils/admin-auth');
+const { YouTubeWebOAuthService } = require('./utils/youtube-web-oauth');
 const { Database } = require('./database/db');
 const { CredentialManager } = require('./utils/credential-manager');
 const { ContentStrategyAgent } = require('./agents/content-strategy-agent');
@@ -37,6 +39,8 @@ function isLoopbackHost(host) {
 class YouTubeAutomationAgent {
   constructor() {
     this.logger = new Logger('MainAgent');
+    this.adminAuth = new AdminAuth();
+    this.youtubeWebOAuth = null;
     this.db = null;
     this.credentials = null;
     this.agents = {};
@@ -60,6 +64,7 @@ class YouTubeAutomationAgent {
 
   async initialize() {
     try {
+      this.adminAuth.validateConfiguration();
       console.log(chalk.cyan.bold(`\n🎬 YouTube Automation Agent v${version}`));
       console.log(chalk.gray('─'.repeat(50)));
       
@@ -67,6 +72,7 @@ class YouTubeAutomationAgent {
       this.logger.info('Initializing database...');
       this.db = new Database();
       await this.db.initialize();
+      this.youtubeWebOAuth = new YouTubeWebOAuthService({ db: this.db, logger: this.logger });
       await this.db.markInterruptedJobs();
       this.recovery = new GenerationRecoveryService(this.db, {
         logger: this.logger,
@@ -91,7 +97,28 @@ class YouTubeAutomationAgent {
       // Load credentials
       this.logger.info('Loading credentials...');
       this.credentials = new CredentialManager();
-      const credentialsValid = await this.credentials.validateAll();
+      let credentialsValid;
+      if (this.adminAuth.enabled) {
+        await this.credentials.loadCredentials();
+        await this.credentials.loadTokens();
+        this.credentials.credentials.youtube = {
+          client_id: process.env.YOUTUBE_OAUTH_CLIENT_ID,
+          client_secret: process.env.YOUTUBE_OAUTH_CLIENT_SECRET,
+          redirect_uris: [process.env.YOUTUBE_OAUTH_REDIRECT_URI]
+        };
+        const defaultChannel = await this.db.getDefaultChannel();
+        if (defaultChannel?.status === 'connected') {
+          this.credentials.tokens.youtube = await this.youtubeWebOAuth.getChannelTokens(defaultChannel.id);
+          this.credentials.onYouTubeTokensUpdated = tokens =>
+            this.youtubeWebOAuth.saveChannelTokens(defaultChannel.id, tokens);
+        } else {
+          delete this.credentials.tokens.youtube;
+        }
+        credentialsValid = this.credentials.getMissingCredentials().length === 0 &&
+          Boolean(this.credentials.tokens.youtube);
+      } else {
+        credentialsValid = await this.credentials.validateAll();
+      }
       this.readiness = new ProductionReadinessService(this.db, this.credentials);
       
       if (!credentialsValid) {
@@ -218,7 +245,11 @@ class YouTubeAutomationAgent {
 
   requireAPIKey() {
     return (req, res, next) => {
+      if (req.adminAuthenticated) return next();
       if (!process.env.API_KEY) {
+        if (this.adminAuth?.enabled) {
+          return res.status(401).json({ success: false, error: 'Owner sign-in required' });
+        }
         return next();
       }
 
@@ -378,9 +409,21 @@ class YouTubeAutomationAgent {
   }
   setupAPI() {
     this.app.use(express.json({ limit: '1mb' }));
+    this.app.use(express.urlencoded({ extended: false, limit: '8kb' }));
+    if (this.adminAuth?.enabled) this.app.set('trust proxy', 1);
+    this.app.use(this.adminAuth.middleware());
+
+    this.app.get('/login', (_req, res) => {
+      res.sendFile(path.join(__dirname, 'dashboard', 'login.html'));
+    });
+    this.app.post('/auth/login', (req, res) => this.adminAuth.handleLogin(req, res));
+    this.app.post('/auth/logout', (req, res) => this.adminAuth.handleLogout(req, res));
+    this.app.get('/channels', (_req, res) => {
+      res.sendFile(path.join(__dirname, 'dashboard', 'channels.html'));
+    });
     this.app.use(express.static(path.join(__dirname, 'dashboard')));
 
-    if (!process.env.API_KEY) {
+    if (!process.env.API_KEY && !this.adminAuth?.enabled) {
       this.logger.warn('API_KEY is not set; mutating API routes are unprotected');
     }
     
@@ -389,6 +432,64 @@ class YouTubeAutomationAgent {
       res.sendFile(path.join(__dirname, 'dashboard', 'index.html'));
     });
     
+    // Cloud channel management. OAuth tokens are encrypted and never returned here.
+    this.app.get('/api/channels', this.requireAPIKey(), async (_req, res) => {
+      try {
+        const channels = await this.db.listChannels();
+        return res.json({ success: true, channels });
+      } catch (error) {
+        return res.status(500).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/channels/oauth/start', this.requireAPIKey(), async (_req, res) => {
+      try {
+        if (!this.youtubeWebOAuth?.isConfigured()) {
+          return res.status(503).json({ success: false, error: 'Configure the YouTube OAuth web client and TOKEN_ENCRYPTION_KEY first' });
+        }
+        const authorizationUrl = await this.youtubeWebOAuth.startConnect();
+        return res.json({ success: true, authorizationUrl });
+      } catch (error) {
+        return res.status(400).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.get('/auth/youtube/callback', async (req, res) => {
+      if (req.query.error) return res.redirect('/channels?error=google_authorization_denied');
+      try {
+        await this.youtubeWebOAuth.completeCallback({ code: req.query.code, state: req.query.state });
+        return res.redirect('/channels?connected=1');
+      } catch (error) {
+        this.logger.error('YouTube web OAuth callback failed: ' + error.message);
+        return res.redirect('/channels?error=connection_failed');
+      }
+    });
+
+    this.app.post('/api/channels/:channelId/default', this.requireAPIKey(), async (req, res) => {
+      try {
+        const channel = await this.db.getChannel(req.params.channelId);
+        if (!channel || channel.status !== 'connected') {
+          return res.status(404).json({ success: false, error: 'Connected channel not found' });
+        }
+        if (this.scheduler) await this.scheduler.pauseAutomation();
+        const selected = await this.db.setDefaultChannel(channel.id);
+        return res.json({ success: true, channel: selected, restartRequired: true });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message });
+      }
+    });
+
+    this.app.post('/api/channels/:channelId/disconnect', this.requireAPIKey(), async (req, res) => {
+      try {
+        const selected = await this.db.getChannel(req.params.channelId);
+        if (selected?.isDefault && this.scheduler) await this.scheduler.pauseAutomation();
+        const channel = await this.youtubeWebOAuth.disconnect(req.params.channelId);
+        return res.json({ success: true, channel });
+      } catch (error) {
+        return res.status(error.status || 400).json({ success: false, error: error.message });
+      }
+    });
+
     // Health check
     this.app.get('/health', (req, res) => {
       res.json({
@@ -1850,12 +1951,15 @@ class YouTubeAutomationAgent {
     }
     
     const PORT = process.env.PORT || 3456;
-    // Loopback by default: mutating routes are open whenever API_KEY is unset,
-    // so the dashboard must not be reachable from the network unless asked.
+    // Refuse unsafe remote exposure. Cloud mode uses owner sessions; other remote installs require API_KEY.
     const HOST = process.env.HOST || '127.0.0.1';
+    if (!isLoopbackHost(HOST) && !this.adminAuth.enabled && !process.env.API_KEY) {
+      throw new Error('Refusing remote bind without CLOUD_MODE owner authentication or API_KEY');
+    }
+    // Local installs bind to loopback. Cloud Compose exposes the app only to a TLS reverse proxy.
     this.app.listen(PORT, HOST, () => {
       console.log(chalk.green(`\n✅ YouTube Automation Agent running on ${HOST}:${PORT}`));
-      if (!isLoopbackHost(HOST) && !process.env.API_KEY) {
+      if (!isLoopbackHost(HOST) && !process.env.API_KEY && !this.adminAuth.enabled) {
         console.log(chalk.yellow(`⚠️  HOST=${HOST} exposes the dashboard to your network without API_KEY. Set API_KEY in .env to protect generation, approval, and publishing routes.`));
       }
       console.log(chalk.gray('─'.repeat(50)));

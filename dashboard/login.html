@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · YouTube Automation Agent</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background:#10131a; color:#f4f6fb; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px; }
+    main { width:min(420px,100%); padding:32px; border:1px solid #303745; border-radius:18px; background:#191f2a; }
+    h1 { margin:0 0 8px; font-size:24px; } p { color:#aab3c2; line-height:1.5; }
+    label { display:block; margin:24px 0 8px; color:#d8deea; }
+    input { width:100%; padding:13px 14px; border-radius:10px; border:1px solid #424d60; background:#0f141d; color:#fff; font:inherit; }
+    button { width:100%; margin-top:16px; padding:13px; border:0; border-radius:10px; background:#5b82f6; color:white; font-weight:700; cursor:pointer; }
+    small { display:block; margin-top:18px; color:#8994a6; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>YouTube Automation Agent</h1>
+    <p>Sign in to manage your channels, content pipeline and publishing settings.</p>
+    <form method="post" action="/auth/login">
+      <label for="password">Owner password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+      <button type="submit">Sign in</button>
+    </form>
+    <small>Your session is protected by an HTTP-only cookie and expires after 8 hours.</small>
+  </main>
+</body>
+</html>
